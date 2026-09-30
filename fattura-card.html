@@ -36,6 +36,11 @@
   .checks input { width: auto; }
   .card dt i, .sheet dt i { font-style: normal; color: #888; margin-left: 0.8mm; }
   .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .qrup { display: none; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .qrup.on { display: flex; }
+  .qrup img { width: 48px; height: 48px; object-fit: contain; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  .qrup .st { font-size: 12px; color: var(--muted); flex: 1; }
+  .qr img { object-fit: contain; }
   .preview-box { display: flex; justify-content: center; padding: 10px 0; }
 
   /* ---------- the card (real size 85 x 55 mm) ---------- */
@@ -71,6 +76,16 @@
   .sheet.noqr .qr { display: none; }
   .sheet .ask { font-size: 10pt; margin-top: 4mm; font-style: italic; color: #333; }
 
+  /* quarter A4 (landscape A4, 2 x 2 = 4 per page), 140 x 96 mm */
+  .sheet.quarter { width: 140mm; height: 96mm; min-height: 0; padding: 7mm 8mm; gap: 5mm; overflow: hidden; }
+  .sheet.quarter .head { font-size: 8.5pt; margin-bottom: 2.5mm; }
+  .sheet.quarter .name { font-size: 14pt; margin-bottom: 2mm; }
+  .sheet.quarter dl { font-size: 10pt; row-gap: 1mm; column-gap: 3.5mm; }
+  .sheet.quarter dd { overflow-wrap: anywhere; }
+  .sheet.quarter .qr { width: 30mm; flex: none; }
+  .sheet.quarter .qr canvas, .sheet.quarter .qr img { width: 30mm !important; height: 30mm !important; }
+  .sheet.quarter .ask { font-size: 9pt; margin-top: 3mm; }
+
   #printArea { display: none; }
 
   @media print {
@@ -81,6 +96,8 @@
     #printArea.cards { display: grid; grid-template-columns: 85mm 85mm; gap: 0; justify-content: center; }
     #printArea.cards .card { border-radius: 0; border: 0.2mm dashed #aaa; }
     #printArea .sheet { margin: 0 auto 10mm; page-break-inside: avoid; }
+    #printArea.quarters { display: grid; grid-template-columns: 140mm 140mm; gap: 0; justify-content: center; }
+    #printArea.quarters .sheet { margin: 0; border: 0.2mm dashed #aaa; }
     .card, .sheet { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   }
 </style>
@@ -119,15 +136,24 @@
         <label><span>版式</span>
           <select id="layout">
             <option value="cards">名片 85×55mm（A4 一页 10 张）</option>
+            <option value="quarter" selected>中卡 140×96mm（A4 横向一页 4 张）</option>
             <option value="sheet">大卡 A6/A5（A4 一页 2 张）</option>
           </select>
         </label>
         <label><span>二维码</span>
           <select id="qr">
-            <option value="1">显示（店员可用手机扫）</option>
+            <option value="1">自动生成（店员可用手机扫）</option>
+            <option value="img">用我上传的图片（如税务局官方二维码）</option>
             <option value="0">不显示</option>
           </select>
         </label>
+      </div>
+      <div class="qrup" id="qrUp">
+        <img id="qrThumb" alt="" hidden>
+        <span class="st" id="qrStatus">还没有上传。PDF 请先截图，裁剪出二维码部分再上传。</span>
+        <button id="qrPick">上传图片</button>
+        <button id="qrDel" hidden>移除</button>
+        <input type="file" id="qrFile" accept="image/*" hidden>
       </div>
       <div class="row">
         <label><span>卡片语言</span>
@@ -136,7 +162,7 @@
             <option value="both">意大利语 + 中文</option>
           </select>
         </label>
-        <div></div>
+        <label><span>二维码下方文字</span><input id="qrcap" placeholder="Scansiona i dati"></label>
       </div>
       <span style="display:block;font-size:12px;color:var(--muted);margin-bottom:4px">卡片上显示哪些项（没勾的不打印）</span>
       <div class="checks" id="checks"></div>
@@ -158,9 +184,10 @@
 </div>
 
 <div id="printArea"></div>
+<style id="pageStyle"></style>
 
 <script>
-const FIELDS = ["ragione","piva","cf","via","cap","citta","prov","sdi","pec","ref","tel","email"];
+const FIELDS = ["ragione","piva","cf","via","cap","citta","prov","sdi","pec","ref","tel","email","qrcap"];
 const KEY = "fattura-card-v1";
 const $ = id => document.getElementById(id);
 // field key, card label, Chinese label
@@ -177,24 +204,39 @@ const ROWS = [
 $("checks").innerHTML = ROWS.map(r =>
   `<label><input type="checkbox" data-show="${r[0]}" checked>${r[2]}</label>`).join("");
 const showBoxes = [...document.querySelectorAll("[data-show]")];
+let qrImg = ""; // uploaded QR image as data URL
 
-function load() {
-  let d = {};
-  try { d = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
-  FIELDS.forEach(f => { if (d[f] != null) $(f).value = d[f]; });
+function apply(d, reset) {
+  FIELDS.forEach(f => { if (d[f] != null || reset) $(f).value = d[f] || ""; });
   if (d.layout) $("layout").value = d.layout;
   if (d.qr != null) $("qr").value = d.qr;
   if (d.lang) $("lang").value = d.lang;
   if (d.show) showBoxes.forEach(b => b.checked = d.show.includes(b.dataset.show));
+  if (d.qrImg != null || reset) qrImg = d.qrImg || "";
+}
+function load() {
+  let d = {};
+  try { d = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch (e) {}
+  apply(d);
 }
 function data() {
   const d = {};
   FIELDS.forEach(f => d[f] = $(f).value.trim());
   d.layout = $("layout").value; d.qr = $("qr").value; d.lang = $("lang").value;
   d.show = showBoxes.filter(b => b.checked).map(b => b.dataset.show);
+  d.qrImg = qrImg;
   return d;
 }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(data())); } catch (e) {} }
+let warnedFull = false;
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify(data())); }
+  catch (e) {
+    if (qrImg && e.name === "QuotaExceededError" && !warnedFull) {
+      warnedFull = true;
+      alert("二维码图片太大，没能保存到浏览器里，请换一张小一点的图片。");
+    }
+  }
+}
 
 const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
@@ -208,20 +250,32 @@ function rows(d) {
 function qrText(d) {
   return [d.ragione, ...rows(d).map(r => r[0] + ": " + r[1])].join("\n");
 }
+// layout -> card class, cards per A4 page, printArea class, @page rule
+const LAYOUTS = {
+  card: { cls: "card", n: 10, area: "cards", page: "size: A4; margin: 10mm;" },
+  quarter: { cls: "sheet quarter", n: 4, area: "quarters", page: "size: A4 landscape; margin: 8mm;" },
+  sheet: { cls: "sheet", n: 2, area: "sheets", page: "size: A4; margin: 10mm;" },
+};
+const layoutOf = d => LAYOUTS[d.layout] || LAYOUTS.card;
 function cardHTML(d, cls) {
   const dl = rows(d).map(r => `<dt>${r[0]}${d.lang === "both" ? `<i>${r[2]}</i>` : ""}</dt><dd>${esc(r[1])}</dd>`).join("");
-  const ask = cls === "sheet" ? `<div class="ask">Gentilmente, mi può emettere fattura elettronica con questi dati? Grazie!</div>` : "";
-  return `<div class="${cls}${d.qr === "0" ? " noqr" : ""}">
+  const ask = cls.startsWith("sheet") ? `<div class="ask">Gentilmente, mi può emettere fattura elettronica con questi dati? Grazie!</div>` : "";
+  return `<div class="${cls}${hasQR(d) ? "" : " noqr"}">
     <div class="txt">
       <div class="head">Dati per la fattura elettronica</div>
       <div class="name">${esc(d.ragione || "RAGIONE SOCIALE")}</div>
       <dl>${dl}</dl>${ask}
     </div>
-    <div class="qr"><div class="qrc"></div><small>Scansiona i dati</small></div>
+    <div class="qr"><div class="qrc"></div><small>${esc(d.qrcap || "Scansiona i dati")}</small></div>
   </div>`;
 }
+const hasQR = d => d.qr === "img" ? !!d.qrImg : d.qr !== "0";
 function fillQR(root, d) {
-  if (d.qr === "0" || typeof QRCode === "undefined") {
+  if (d.qr === "img" && d.qrImg) {
+    root.querySelectorAll(".qrc").forEach(el => { el.innerHTML = `<img src="${d.qrImg}" alt="QR">`; });
+    return;
+  }
+  if (!hasQR(d) || typeof QRCode === "undefined") {
     root.querySelectorAll(".qr").forEach(q => q.style.display = "none");
     return;
   }
@@ -232,19 +286,22 @@ function fillQR(root, d) {
 }
 function render() {
   const d = data();
-  const cls = d.layout === "sheet" ? "sheet" : "card";
+  $("qrUp").classList.toggle("on", d.qr === "img");
+  $("qrThumb").hidden = $("qrDel").hidden = !qrImg;
+  if (qrImg) $("qrThumb").src = qrImg;
+  $("qrStatus").textContent = qrImg ? "已上传，会替换卡片上的二维码。" : "还没有上传。PDF 请先截图，裁剪出二维码部分再上传。";
   const p = $("preview");
-  p.innerHTML = cardHTML(d, cls);
+  p.innerHTML = cardHTML(d, layoutOf(d).cls);
   fillQR(p, d);
   save();
 }
 function buildPrint() {
   const d = data();
   const pa = $("printArea");
-  const cls = d.layout === "sheet" ? "sheet" : "card";
-  const n = cls === "card" ? 10 : 2;
-  pa.className = cls === "card" ? "cards" : "sheets";
-  pa.innerHTML = Array.from({length: n}, () => cardHTML(d, cls)).join("");
+  const L = layoutOf(d);
+  $("pageStyle").textContent = `@media print { @page { ${L.page} } }`;
+  pa.className = L.area;
+  pa.innerHTML = Array.from({length: L.n}, () => cardHTML(d, L.cls)).join("");
   fillQR(pa, d);
 }
 
@@ -253,7 +310,27 @@ showBoxes.forEach(b => b.addEventListener("change", render));
 $("printBtn").onclick = () => { buildPrint(); setTimeout(() => window.print(), 300); };
 $("clearBtn").onclick = () => {
   if (!confirm("确定清空所有信息？")) return;
-  FIELDS.forEach(f => $(f).value = ""); render();
+  FIELDS.forEach(f => $(f).value = ""); qrImg = ""; render();
+};
+$("qrPick").onclick = () => $("qrFile").click();
+$("qrDel").onclick = () => { qrImg = ""; render(); };
+$("qrFile").onchange = e => {
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  const img = new Image();
+  img.onload = () => {
+    // shrink big photos so they fit in localStorage; QR stays sharp at 1200px
+    const k = Math.min(1, 1200 / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+    const g = c.getContext("2d");
+    g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+    g.drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(img.src);
+    qrImg = c.toDataURL("image/png");
+    $("qr").value = "img"; render();
+  };
+  img.onerror = () => alert("无法读取这个图片文件");
+  img.src = URL.createObjectURL(f);
 };
 $("exportBtn").onclick = () => {
   const blob = new Blob([JSON.stringify(data(), null, 2)], {type: "application/json"});
@@ -265,12 +342,7 @@ $("importFile").onchange = e => {
   const f = e.target.files[0]; if (!f) return;
   f.text().then(t => {
     try {
-      const d = JSON.parse(t);
-      FIELDS.forEach(k => $(k).value = d[k] || "");
-      if (d.layout) $("layout").value = d.layout;
-      if (d.qr != null) $("qr").value = d.qr;
-      if (d.lang) $("lang").value = d.lang;
-      if (d.show) showBoxes.forEach(b => b.checked = d.show.includes(b.dataset.show));
+      apply(JSON.parse(t), true);
       render();
     } catch (err) { alert("文件格式不对"); }
   });
